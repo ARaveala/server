@@ -4925,6 +4925,8 @@ int JOIN::exec()
 
 int JOIN::exec_inner()
 {
+//  fprintf(stderr, "DEBUG: exec_inner called\n");
+//  fflush(stderr);  // force immediate output
   List<Item> *columns_list= &fields_list;
   DBUG_ENTER("JOIN::exec_inner");
   DBUG_ASSERT(optimization_state == JOIN::OPTIMIZATION_DONE);
@@ -5115,7 +5117,7 @@ int JOIN::exec_inner()
     error= thd->is_error();
     DBUG_RETURN(error);
   }
-
+  //fprintf(stderr, "DEBUG exec_inner result type: %s\n", typeid(*result).name());
   THD_STAGE_INFO(thd, stage_sending_data);
   DBUG_PRINT("info", ("%s", thd->proc_info));
   result->send_result_set_metadata(
@@ -5444,7 +5446,7 @@ mysql_select(THD *thd, TABLE_LIST *tables, List<Item> &fields, COND *conds,
     select_lex->having= join->having_history;
   }
 
-err:
+err:stage_end
   thd->push_final_warnings();
   if (select_lex->pushdown_select)
   {
