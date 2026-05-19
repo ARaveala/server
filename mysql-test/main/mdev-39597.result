@@ -13,7 +13,7 @@ INSERT INTO profile_test (name, value) VALUES
 SET profiling = 1;
 INSERT INTO profile_test (name, value)
 SELECT name, value FROM profile_test LIMIT 5;
-# Check that no stage apperas twice consecutivley around removing tmp table
+# Check that no stage appears twice consecutivley around removing tmp table
 SELECT COUNT(*) AS duplicate_stage_found
 FROM (
 SELECT
