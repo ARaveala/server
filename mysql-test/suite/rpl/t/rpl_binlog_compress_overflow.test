@@ -1,0 +1,112 @@
+#
+# MDEV-39762: query_event_uncompress() stack overflow via oversized un_len
+#
+# The slave IO thread must reject a QUERY_COMPRESSED_EVENT whose un_len
+# field exceeds MAX_MAX_ALLOWED_PACKET (1GB) and stop cleanly rather
+# than overflowing the stack or crashing.
+#
+# Approach: corrupt_binlog.pl patches un_len to 0xFFFFFFFC directly in
+# the master binlog file after the event is written and the file is
+# closed (after FLUSH BINARY LOGS). No production code changes needed.
+# The slave IO thread reads the corrupted event from the master and
+# must reject it via the queue_event guard.
+#
+
+--source include/have_binlog_format_statement.inc
+--source include/not_embedded.inc
+--source include/master-slave.inc
+
+--connection slave
+call mtr.add_suppression("Slave I/O: Relay log write failure: could not queue event from master");
+call mtr.add_suppression("Uncompressed data size too large");
+call mtr.add_suppression("Slave I/O thread.*exiting");
+call mtr.add_suppression("Error reading packet from server");
+
+--connection master
+CREATE TABLE t1 (a VARCHAR(300));
+SET GLOBAL binlog_checksum = NONE;
+SET GLOBAL log_bin_compress = 1;
+SET GLOBAL log_bin_compress_min_len = 10;
+
+
+# Stop slave IO thread before generating the event we want to corrupt
+--connection slave
+--source include/stop_slave.inc
+
+# chnaged
+# Get positions before insert 
+#let $pos_before = query_get_value(SHOW MASTER STATUS, Position, 1);
+#let $file_before = query_get_value(SHOW MASTER STATUS, File, 1);
+
+# Generate a QUERY_COMPRESSED_EVENT on master
+--connection master
+INSERT INTO t1 VALUES ('test');
+
+# Get the current binlog file name before rotation
+let $binlog_file = query_get_value(SHOW MASTER STATUS, File, 1);
+let $datadir = `SELECT TRIM(TRAILING '/' FROM @@datadir)`;
+
+# Rotate to a new binlog file so the event file is closed and safe to patch
+FLUSH BINARY LOGS;
+
+# Patch the closed binlog file - corrupt un_len to 0xFFFFFFFC
+# corrupt_binlog.pl patches the first QUERY_COMPRESSED_EVENT in place
+--exec perl $MYSQL_TEST_DIR/suite/rpl/t/corrupt_binlog.pl $datadir/$binlog_file
+
+--echo DEBUG_CORRUPT: binlog_file=$binlog_file
+--echo DEBUG_CORRUPT: datadir=$datadir
+
+# debug to see hex
+
+# --exec sh -c "grep -a -c 'un_len' /dev/null; od -An -tx1 -j <offset> -N 8 $datadir/$binlog_file"
+
+# Start slave IO thread - it will request events from the patched file
+--connection slave
+# debug slave status
+--echo DEBUG_CORRUPT: slave status before start
+--query_vertical SHOW SLAVE STATUS
+
+# chnaged
+## Read possition not gtid
+# --eval CHANGE MASTER TO MASTER_USE_GTID=NO, MASTER_LOG_FILE='$file_before', MASTER_LOG_POS=$pos_before
+
+START SLAVE IO_THREAD;
+
+# Debug: wait a moment then check slave status
+--sleep 2
+--echo DEBUG: slave status after start
+--query_vertical SHOW SLAVE STATUS
+
+# IO thread must stop with ER_SLAVE_RELAY_LOG_WRITE_FAILURE (1595)
+# Before fix: server crashes (SIGABRT stack overflow)
+# After fix: queue_event guard rejects un_len > MAX_MAX_ALLOWED_PACKET
+--let $slave_io_errno= 1595
+--let $show_slave_io_error= 1
+--source include/wait_for_slave_io_error.inc
+
+## FIX THIS:: assert_grep for Internal MariaDB error code: 1256, as thats hardcoded in , no language discrepency
+--let $assert_file= $MYSQLTEST_VARDIR/log/mysqld.2.err
+--let $assert_text= Uncompressed data size too large
+--let $assert_select= Uncompressed data size too large
+--let $assert_count= 1
+--source include/assert_grep.inc
+
+# Cleanup
+--connection slave
+STOP SLAVE;
+RESET SLAVE ALL;
+
+--connection master
+let $master_gtid= `SELECT @@gtid_binlog_pos`;
+--connection slave
+--eval SET GLOBAL gtid_slave_pos='$master_gtid'
+--eval CHANGE MASTER TO MASTER_HOST='127.0.0.1', MASTER_PORT=$MASTER_MYPORT, MASTER_USER='root', MASTER_PASSWORD='', MASTER_USE_GTID=SLAVE_POS
+--source include/start_slave.inc
+
+--connection master
+SET GLOBAL log_bin_compress = 0;
+SET GLOBAL log_bin_compress_min_len = DEFAULT;
+SET GLOBAL binlog_checksum = CRC32;
+DROP TABLE t1;
+--sync_slave_with_master
+--source include/rpl_end.inc

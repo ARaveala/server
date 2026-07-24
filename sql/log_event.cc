@@ -374,6 +374,7 @@ query_event_uncompress(const Format_description_log_event *description_event,
   const uchar *end= src + len;
   uchar *new_dst;
 
+  
   // bad event
   if (src_len < len)
     return 1;
@@ -402,12 +403,15 @@ query_event_uncompress(const Format_description_log_event *description_event,
   int32 comp_len= (int32)(len - (tmp - src) -
                           (contain_checksum ? BINLOG_CHECKSUM_LEN : 0));
   uint32 un_len=  binlog_get_uncompress_len(tmp);
-
+  fprintf(stderr, "MDEV39762_DEBUG (query_event_uncompress): un_len=%lu\n",
+	        (unsigned long)un_len);
+  fflush(stderr);
   // bad event 
   if (comp_len < 0 || un_len == 0)
     return 1;
 
   // bad event
+  //DBUG_PRINT("DEBUG_CORRUPT UN LEN", ("Debugging message: %f", un_len));
   if (unlikely(un_len > MAX_MAX_ALLOWED_PACKET))
     return 2;
   *newlen= (ulong)(tmp - src) + un_len;
@@ -1848,6 +1852,9 @@ Query_compressed_log_event::Query_compressed_log_event(const uchar *buf,
       query= 0;
       return;
     }
+	fprintf(stderr, "MDEV39762_DEBUG (Query_compressed_log_event): un_len=%lu (0x%lx) event_len=%u\n",
+	        (unsigned long)un_len, (unsigned long)un_len, event_len);
+	fflush(stderr);
     if (unlikely(un_len > MAX_MAX_ALLOWED_PACKET))
     {
       my_error(ER_TOO_BIG_FOR_UNCOMPRESS, MYF(0), MAX_MAX_ALLOWED_PACKET);
